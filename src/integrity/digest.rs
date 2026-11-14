@@ -1,4 +1,6 @@
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{ErrorKind, Read};
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
@@ -35,43 +37,28 @@ pub fn ensure_match(
     })
 }
 
-/// Writer adapter that hashes every byte passed through to the inner writer.
-pub struct HashingWriter<W> {
-    inner: W,
-    hasher: Sha256,
-}
-
-impl<W: Write> HashingWriter<W> {
-    pub fn new(inner: W) -> Self {
-        HashingWriter {
-            inner,
-            hasher: Sha256::new(),
+/// Returns the lowercase hex SHA-256 of the file at `path`, read in chunks.
+pub fn sha256_file(path: &Path) -> Result<String, IntegrityError> {
+    let read_err = |source| IntegrityError::Read {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = File::open(path).map_err(read_err)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => return Err(read_err(err)),
         }
     }
-
-    /// Flushes the inner writer and returns it with the lowercase hex SHA-256.
-    pub fn finish(mut self) -> io::Result<(W, String)> {
-        self.inner.flush()?;
-        let hex = self
-            .hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Ok((self.inner, hex))
-    }
-}
-
-impl<W: Write> Write for HashingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(buf)?;
-        self.hasher.update(&buf[..written]);
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -90,12 +77,12 @@ mod tests {
     }
 
     #[test]
-    fn hashes_while_writing() {
-        let mut writer = HashingWriter::new(Vec::new());
-        writer.write_all(b"abc").unwrap();
-        let (bytes, hex) = writer.finish().unwrap();
-        assert_eq!(bytes, b"abc");
-        assert_eq!(hex, ABC_SHA256);
+    fn hashes_a_file_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.txt");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(sha256_file(&path).unwrap(), ABC_SHA256);
+        assert!(sha256_file(&dir.path().join("missing")).is_err());
     }
 
     #[test]
