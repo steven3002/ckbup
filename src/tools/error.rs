@@ -10,4 +10,14 @@ pub enum ToolError {
         os: &'static str,
         arch: &'static str,
     },
+    #[error(
+        "{tool} {tag} has no release archive for {os}/{arch}; archives in this release:\n{archives}"
+    )]
+    NoMatchingAsset {
+        tool: &'static str,
+        tag: String,
+        os: &'static str,
+        arch: &'static str,
+        archives: String,
+    },
 }
