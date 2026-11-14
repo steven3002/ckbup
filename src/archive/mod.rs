@@ -7,4 +7,4 @@ mod zip;
 
 pub use error::ArchiveError;
 pub use format::ArchiveFormat;
-pub use locate::find_file;
+pub use locate::package_root;

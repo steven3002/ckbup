@@ -24,6 +24,6 @@ pub enum ArchiveError {
         #[source]
         source: std::io::Error,
     },
-    #[error("`{name}` was not found in the extracted archive")]
+    #[error("the release package has no `{name}` at its top level")]
     BinaryNotFound { name: String },
 }
