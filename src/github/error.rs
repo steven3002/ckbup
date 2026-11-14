@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,4 +34,17 @@ pub enum GithubError {
     },
     #[error("release {tag} has no asset named {name}")]
     AssetMissing { tag: String, name: String },
+    #[error("cannot save the download to {path}: {source}")]
+    Save {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl GithubError {
+    pub fn save(path: &Path) -> impl FnOnce(std::io::Error) -> Self {
+        let path = path.to_path_buf();
+        move |source| GithubError::Save { path, source }
+    }
 }
