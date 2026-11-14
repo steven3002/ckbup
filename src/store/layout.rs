@@ -7,7 +7,7 @@ use super::StoreError;
 ///
 /// ```text
 /// <home>/bin/                         copies of the active binaries
-/// <home>/toolchains/<tool>/<version>/ installed binaries
+/// <home>/toolchains/<tool>/<version>/ installed release packages
 /// <home>/downloads/                   temporary download and extraction space
 /// <home>/active.toml                  active version per tool
 /// ```
@@ -42,8 +42,12 @@ impl Layout {
         self.home.join("bin")
     }
 
+    pub fn tool_dir(&self, tool: &str) -> PathBuf {
+        self.home.join("toolchains").join(tool)
+    }
+
     pub fn toolchain_dir(&self, tool: &str, version: &str) -> PathBuf {
-        self.home.join("toolchains").join(tool).join(version)
+        self.tool_dir(tool).join(version)
     }
 
     pub fn downloads_dir(&self) -> PathBuf {

@@ -6,4 +6,4 @@ mod toolchain;
 pub use active::{activate, active_version};
 pub use error::StoreError;
 pub use layout::Layout;
-pub use toolchain::{installed_binary, place_binary};
+pub use toolchain::{installed_dir, place_package};

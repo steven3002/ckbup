@@ -13,6 +13,8 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{path} already exists but holds no installed binary; remove it and try again")]
+    Occupied { path: PathBuf },
     #[error("{path} is not valid: {source}")]
     InvalidActiveFile {
         path: PathBuf,
