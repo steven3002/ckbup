@@ -22,4 +22,8 @@ pub struct InstallArgs {
     /// Install even when no published checksum is available
     #[arg(long)]
     pub allow_unverified: bool,
+
+    /// Prefer the portable build; try it if the standard build fails with an illegal-instruction error
+    #[arg(long)]
+    pub portable: bool,
 }
