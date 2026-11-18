@@ -2,7 +2,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use super::{Layout, StoreError};
+use super::{Layout, StoreError, leftover};
 
 /// Returns the version folder of `tool` at `version` if its main binary is there.
 ///
@@ -51,6 +51,48 @@ pub fn place_package(
     }
     fs::rename(&staged, &target).map_err(StoreError::io("cannot write", &target))?;
     Ok(target)
+}
+
+/// Renames the folder of `tool` at `version` to a free hidden
+/// `.<version>.removing` name and returns that name.
+///
+/// The folder stops counting as installed at once, and a deletion that stops
+/// part-way can only leave a hidden folder behind. If the rename fails, which
+/// happens when a program or a terminal is using the folder, nothing changes.
+pub fn hide_version(layout: &Layout, tool: &str, version: &str) -> Result<PathBuf, StoreError> {
+    let dir = layout.toolchain_dir(tool, version);
+    let hidden = leftover::removing_path(&layout.tool_dir(tool), version);
+    fs::rename(&dir, &hidden).map_err(|source| match source.kind() {
+        ErrorKind::NotFound => StoreError::io("cannot rename", &dir)(source),
+        _ => StoreError::InUse {
+            tool: tool.to_string(),
+            version: version.to_string(),
+            path: dir.clone(),
+            source,
+        },
+    })?;
+    Ok(hidden)
+}
+
+/// Gives a folder hidden by `hide_version` its version name back.
+pub fn unhide_version(
+    layout: &Layout,
+    tool: &str,
+    version: &str,
+    hidden: &Path,
+) -> Result<(), StoreError> {
+    let dir = layout.toolchain_dir(tool, version);
+    fs::rename(hidden, &dir).map_err(StoreError::io("cannot restore", &dir))
+}
+
+/// Deletes a folder hidden by `hide_version`. Returns `false` when part of it
+/// is still in use, such as a binary from it that still runs; the next sweep
+/// for the tool tries again.
+pub fn delete_hidden(hidden: &Path) -> bool {
+    match fs::remove_dir_all(hidden) {
+        Ok(()) => true,
+        Err(err) => err.kind() == ErrorKind::NotFound,
+    }
 }
 
 #[cfg(unix)]
@@ -135,5 +177,50 @@ mod tests {
         let err = place_package(&layout, "ckb", "v0.210.0", &package, &[]).unwrap_err();
         assert!(matches!(err, StoreError::Occupied { .. }));
         assert_eq!(fs::read(existing.join("notes.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn hides_then_deletes_a_version_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = layout(dir.path());
+        let version_dir = layout.toolchain_dir("fnn", "v0.9.1");
+        fs::create_dir_all(version_dir.join("config")).unwrap();
+        fs::write(version_dir.join("fnn"), b"fnn").unwrap();
+
+        let hidden = hide_version(&layout, "fnn", "v0.9.1").unwrap();
+        assert_eq!(hidden, layout.tool_dir("fnn").join(".v0.9.1.removing"));
+        assert!(!version_dir.exists());
+        assert_eq!(installed_dir(&layout, "fnn", "v0.9.1", "fnn"), None);
+
+        assert!(delete_hidden(&hidden));
+        assert!(!hidden.exists());
+        assert!(delete_hidden(&hidden));
+    }
+
+    #[test]
+    fn unhiding_restores_the_version_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = layout(dir.path());
+        let version_dir = layout.toolchain_dir("fnn", "v0.9.1");
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(version_dir.join("fnn"), b"fnn").unwrap();
+        fs::create_dir(layout.tool_dir("fnn").join(".v0.9.1.removing")).unwrap();
+
+        let hidden = hide_version(&layout, "fnn", "v0.9.1").unwrap();
+        assert_eq!(hidden, layout.tool_dir("fnn").join(".v0.9.1.removing.1"));
+        unhide_version(&layout, "fnn", "v0.9.1", &hidden).unwrap();
+
+        assert_eq!(fs::read(version_dir.join("fnn")).unwrap(), b"fnn");
+        assert!(!hidden.exists());
+    }
+
+    #[test]
+    fn hiding_a_missing_folder_is_not_reported_as_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = layout(dir.path());
+        fs::create_dir_all(layout.tool_dir("fnn")).unwrap();
+
+        let err = hide_version(&layout, "fnn", "v0.9.1").unwrap_err();
+        assert!(matches!(err, StoreError::Io { .. }), "{err}");
     }
 }
