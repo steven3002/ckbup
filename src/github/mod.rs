@@ -6,4 +6,4 @@ mod release;
 pub use client::GithubClient;
 pub use download::download_to_file;
 pub use error::GithubError;
-pub use release::{Asset, Release, fetch_release};
+pub use release::{Asset, Release, fetch_release, list_releases};
