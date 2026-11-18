@@ -167,6 +167,11 @@ const CKB_LIGHT_CLIENT: ToolSpec = ToolSpec {
 
 const TOOLS: &[ToolSpec] = &[CKB, CKB_CLI, CKB_DEBUGGER, FNN, CKB_LIGHT_CLIENT];
 
+/// Every supported tool, in the order ckbup lists them.
+pub fn all_tools() -> &'static [ToolSpec] {
+    TOOLS
+}
+
 pub fn find_tool(name: &str) -> Result<&'static ToolSpec, ToolError> {
     TOOLS
         .iter()
@@ -195,6 +200,15 @@ mod tests {
         assert_eq!(find_tool("fnn").unwrap().repo, "fiber");
         let err = find_tool("ckb-foo").unwrap_err().to_string();
         assert!(err.contains("ckb, ckb-cli, ckb-debugger, fnn, ckb-light-client"));
+    }
+
+    #[test]
+    fn lists_every_tool_in_registry_order() {
+        let names: Vec<&str> = all_tools().iter().map(|tool| tool.name).collect();
+        assert_eq!(
+            names,
+            ["ckb", "ckb-cli", "ckb-debugger", "fnn", "ckb-light-client"]
+        );
     }
 
     #[test]
