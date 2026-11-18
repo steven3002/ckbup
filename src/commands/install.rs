@@ -2,11 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::archive;
-use crate::cli::InstallArgs;
+use crate::cli::{InstallArgs, parse_target};
 use crate::error::Error;
 use crate::github::{self, Asset, GithubClient, Release, fetch_release};
 use crate::integrity::{self, IntegrityError};
-use crate::output::path_hint;
+use crate::output::{activation_report, path_hint};
 use crate::platform::Host;
 use crate::store::{self, Layout, StoreError};
 use crate::tools::{self, Candidate, ToolSpec, Variant};
@@ -26,11 +26,13 @@ pub fn run(args: &InstallArgs) -> Result<(), Error> {
     tools::ensure_supported(tool, host)?;
 
     let layout = Layout::from_env()?;
+    let executables = tool.executables(host);
+    store::sweep(&layout, tool.name, &executables);
+
     let client = GithubClient::from_env();
     let release = fetch_release(&client, tool.owner, tool.repo, requested.as_deref())?;
     let tag = release.tag_name.as_str();
     let binary_file = host.executable_name(tool.binary);
-    let executables = tool.executables(host);
 
     let version_dir = match store::installed_dir(&layout, tool.name, tag, &binary_file) {
         Some(dir) => {
@@ -51,16 +53,15 @@ pub fn run(args: &InstallArgs) -> Result<(), Error> {
 
     match store::active_version(&layout, tool.name)? {
         Some(active) if active != tag => println!(
-            "{} {active} remains the active version; {tag} is installed alongside it",
+            "{0} {active} remains the active version; {tag} is installed alongside it. Switch with: ckbup use {0}@{tag}",
             tool.name
         ),
         _ => {
-            store::activate(&layout, tool.name, tag, &version_dir, &executables)?;
-            let on_path: Vec<String> = executables
-                .iter()
-                .map(|file| layout.bin_dir().join(file).display().to_string())
-                .collect();
-            println!("{} {tag} is active: {}", tool.name, on_path.join(", "));
+            let activation = store::activate(&layout, tool.name, tag, &version_dir, &executables)?;
+            print!(
+                "{}",
+                activation_report(tool.name, tag, &activation.on_path, &activation.removed)
+            );
         }
     }
 
@@ -68,18 +69,6 @@ pub fn run(args: &InstallArgs) -> Result<(), Error> {
         println!("\n{hint}");
     }
     Ok(())
-}
-
-/// Splits `<tool>[@<version>]`; a version given without the `v` prefix gets one,
-/// matching the tag format of every supported repository.
-fn parse_target(target: &str) -> (&str, Option<String>) {
-    match target.split_once('@') {
-        Some((tool, version)) if version.starts_with(|c: char| c.is_ascii_digit()) => {
-            (tool, Some(format!("v{version}")))
-        }
-        Some((tool, version)) => (tool, Some(version.to_string())),
-        None => (target, None),
-    }
 }
 
 /// Selects the release archive for `host`, then downloads, verifies and places it.
@@ -231,19 +220,6 @@ mod tests {
     use crate::archive::ArchiveFormat;
     use flate2::Compression;
     use flate2::write::GzEncoder;
-
-    #[test]
-    fn parses_tool_and_optional_version() {
-        assert_eq!(parse_target("ckb-cli"), ("ckb-cli", None));
-        assert_eq!(
-            parse_target("ckb-cli@v2.0.0"),
-            ("ckb-cli", Some("v2.0.0".to_string()))
-        );
-        assert_eq!(
-            parse_target("ckb-cli@2.0.0"),
-            ("ckb-cli", Some("v2.0.0".to_string()))
-        );
-    }
 
     /// Writes a `.tar.gz` holding `entries` and returns its SHA-256.
     fn tar_gz_with(path: &Path, entries: &[(&str, &[u8])]) -> String {
