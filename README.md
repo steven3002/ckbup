@@ -2,9 +2,9 @@
 
 Installer for official releases of CKB development tools.
 
-> **Early development.** ckbup installs `ckb`, `ckb-cli`, `ckb-debugger`, `fnn`
-> and `ckb-light-client`. `moleculec` and the `list`, `use`, `update` and
-> `remove` commands are planned.
+> **Early development.** ckbup installs, lists, switches and removes `ckb`,
+> `ckb-cli`, `ckb-debugger`, `fnn` and `ckb-light-client`. `moleculec` and the
+> `update` command are planned.
 
 ckbup downloads prebuilt binaries from each project's GitHub Releases, checks
 them against the published SHA-256 checksums, and keeps every installed version
@@ -26,6 +26,11 @@ The binary is written to `target/release/ckbup` (`ckbup.exe` on Windows).
 ckbup install ckb                          # latest stable release
 ckbup install fnn@v0.9.1                   # a specific release tag (the leading "v" is optional)
 ckbup install ckb-light-client --portable  # prefer the portable build
+ckbup list                                 # installed versions of every tool
+ckbup list fnn                             # installed versions of one tool, with their folders
+ckbup list --available                     # newest stable releases on GitHub
+ckbup use fnn@v0.9.1                       # make an installed version active
+ckbup remove fnn@v0.10.1                   # delete an installed version
 ```
 
 Each install:
@@ -39,10 +44,98 @@ Each install:
 5. on the first install of a tool, copies its binaries into `~/.ckbup/bin/` and
    records it as the active version.
 
+Installing another version of a tool later keeps the active one and prints the
+`ckbup use` command that switches to the new one.
+
 A checksum mismatch stops the install and deletes the download.
 
 If `~/.ckbup/bin` is not on your `PATH`, ckbup prints the command to add it for
 your shell. It never edits shell profiles itself.
+
+## Managing installed versions
+
+### List
+
+`ckbup list` shows every supported tool with its installed versions, newest
+first, and marks the active one:
+
+```text
+$ ckbup list
+ckb               not installed
+ckb-cli           not installed
+ckb-debugger      not installed
+fnn               v0.10.1, v0.9.1 (active)
+ckb-light-client  not installed
+```
+
+`ckbup list <tool>` shows each installed version of one tool with its folder.
+`list` only reads; it never changes anything.
+
+`ckbup list --available` shows the newest 10 stable releases of each tool on
+GitHub, with their dates, which ones are installed or active, and what your OS
+and CPU lack for them. Drafts, releases marked as prereleases and tags with a
+`-` suffix (such as `-rc1`) are left out. It costs one GitHub API request per
+tool, five for all tools. Output from November 2026:
+
+```text
+$ ckbup list --available ckb-light-client
+ckb-light-client (nervosnetwork/ckb-light-client), newest stable releases for windows/x86_64:
+  v0.5.4  2026-01-02  active
+  v0.5.3  2025-09-09
+  v0.5.2  2025-08-28
+  v0.5.1  2025-07-01
+  v0.5.0  2025-06-19
+  v0.4.1  2024-11-13  no checksum (needs --allow-unverified)
+  v0.4.0  2024-11-05  no checksum (needs --allow-unverified)
+  v0.3.8  2024-08-12  no checksum (needs --allow-unverified)
+  v0.3.7  2024-04-12  no checksum (needs --allow-unverified)
+  v0.3.6  2024-02-08  no checksum (needs --allow-unverified)
+Older releases: https://github.com/nervosnetwork/ckb-light-client/releases
+```
+
+A release that has no archive for your platform shows
+`no archive for <os>/<arch>`.
+
+### Switch
+
+`ckbup use <tool>@<version>` makes an installed version active: it puts that
+version's binaries in `~/.ckbup/bin/` in place of the previous ones and records
+it in `active.toml`. It works offline. A version that is not installed is an
+error, and nothing changes:
+
+```text
+$ ckbup use fnn@v0.9.0
+error: fnn v0.9.0 is not installed. Installed: v0.10.1, v0.9.1. Install it with: ckbup install fnn@v0.9.0
+```
+
+### Remove
+
+`ckbup remove <tool>@<version>` deletes an installed version. The active
+version cannot be removed while other versions are installed; switch first:
+
+```text
+$ ckbup remove fnn@v0.9.1
+error: fnn v0.9.1 is the active version. Switch first, for example: ckbup use fnn@v0.10.1
+```
+
+Removing the only installed version of a tool also takes its binaries out of
+`~/.ckbup/bin/` and clears its active version.
+
+### On Windows
+
+Windows does not let a program overwrite or delete an executable while it
+runs, but it can rename it. So:
+
+- before ckbup replaces or removes a binary in `~/.ckbup/bin/`, it renames it
+  to `<name>.old` (or `<name>.old.1` and so on). A renamed copy that is still
+  running stays until the next time ckbup installs, switches or removes that
+  tool;
+- `remove` first renames the version folder to a hidden
+  `.<version>.removing`. If a binary from it is still running, the version is
+  already gone from `ckbup list`, and the folder is deleted on a later run;
+- a version folder that a terminal or another program uses as its working
+  directory cannot be removed until it is closed. `remove` says so and changes
+  nothing.
 
 ## Supported tools
 
@@ -56,6 +149,7 @@ your shell. It never edits shell profiles itself.
 
 The ckb package also contains a copy of `ckb-cli`. ckbup keeps it inside the
 package and never puts it on `PATH`; install the `ckb-cli` tool for that.
+Switching or removing ckb never touches the `ckb-cli` tool's binary.
 
 ### Platforms
 
@@ -65,7 +159,7 @@ Builds published by the latest stable releases (checked November 2026):
 |---|---|---|---|---|---|
 | ckb v0.210.0 | standard, portable | standard ¹ | standard, portable | standard, portable | standard |
 | ckb-cli v2.0.0 | yes | yes | yes | yes | yes |
-| ckb-debugger v1.1.1 | yes | yes | none | yes | yes |
+| ckb-debugger v1.1.2 | yes | yes | none | yes | yes |
 | fnn v0.10.1 | standard, portable | portable | portable | portable | standard |
 | ckb-light-client v0.5.4 | standard, portable | none ² | standard, portable | none ² | standard |
 
@@ -161,13 +255,25 @@ ckbup.
 └── toolchains/<tool>/<version>/        every installed release package
 ```
 
+ckbup also leaves short-lived entries there:
+
+- `toolchains/<tool>/.<version>.partial` while an install moves a package in;
+- `toolchains/<tool>/.<version>.removing` (or `.removing.1` and so on) for a
+  removed version whose folder could not be deleted yet;
+- `bin/<name>.old` (or `<name>.old.1` and so on) for a replaced binary that
+  was still running.
+
+`list` ignores them. ckbup deletes the last two the next time it installs,
+switches or removes that tool, and the next install of that version replaces a
+`.partial` folder.
+
 ## Development
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo test -- --ignored                 # real installs from GitHub into a temporary home
+cargo test -- --ignored                 # GitHub requests and real installs into a temporary home
 ```
 
 ## Author
