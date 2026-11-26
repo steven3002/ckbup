@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
-use ureq::Agent;
 use ureq::http::Response;
+use ureq::{Agent, Body, BodyReader, Proxy};
 
 use super::GithubError;
 
@@ -16,16 +16,52 @@ pub struct GithubClient {
     token: Option<String>,
 }
 
+/// The status and the headers of a release asset response that decide
+/// whether its body continues the bytes already on disk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AssetHead {
+    pub status: u16,
+    pub content_range: Option<String>,
+    pub content_encoding: Option<String>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+/// A release asset response whose body has not been read yet.
+pub struct AssetResponse {
+    pub head: AssetHead,
+    body: Body,
+}
+
+impl AssetResponse {
+    pub fn into_reader(self) -> BodyReader<'static> {
+        self.body.into_reader()
+    }
+}
+
 impl GithubClient {
-    /// Builds a client that sends `GITHUB_TOKEN` to the API when it is set.
+    /// Builds a client that sends `GITHUB_TOKEN` to the API when it is set,
+    /// and uses the proxy named by the usual environment variables.
     pub fn from_env() -> Self {
         let token = std::env::var("GITHUB_TOKEN")
             .ok()
             .filter(|token| !token.trim().is_empty());
+        Self::new(token, Proxy::try_from_env())
+    }
+
+    /// A client for the local test server: no token, and no proxy from the
+    /// environment between it and `127.0.0.1`.
+    #[cfg(test)]
+    pub fn for_test_server() -> Self {
+        Self::new(None, None)
+    }
+
+    fn new(token: Option<String>, proxy: Option<Proxy>) -> Self {
         let config = Agent::config_builder()
             .user_agent(USER_AGENT)
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(600)))
+            .proxy(proxy)
             .build();
         GithubClient {
             agent: Agent::new_with_config(config),
@@ -75,6 +111,44 @@ impl GithubClient {
         io::copy(&mut reader, writer).map_err(|source| GithubError::Io {
             url: url.to_string(),
             source,
+        })
+    }
+
+    /// GETs the release asset at `url` from byte `offset` on, asking for it
+    /// unencoded. A 416 comes back as a response, because for a download that
+    /// resumes it can mean that nothing is left; every other status that is
+    /// not a success is an error. The token is never attached.
+    pub fn get_asset(&self, url: &str, offset: u64) -> Result<AssetResponse, GithubError> {
+        let mut request = self.agent.get(url).header("Accept-Encoding", "identity");
+        if offset > 0 {
+            request = request.header("Range", format!("bytes={offset}-"));
+        }
+        let response = request.call().map_err(|source| GithubError::Request {
+            url: url.to_string(),
+            source,
+        })?;
+        let response = if response.status().as_u16() == 416 {
+            response
+        } else {
+            check_status(response, url)?
+        };
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        let head = AssetHead {
+            status: response.status().as_u16(),
+            content_range: header("content-range"),
+            content_encoding: header("content-encoding"),
+            etag: header("etag"),
+            last_modified: header("last-modified"),
+        };
+        Ok(AssetResponse {
+            head,
+            body: response.into_body(),
         })
     }
 }
