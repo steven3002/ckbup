@@ -56,6 +56,14 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "another ckbup is downloading {asset} ({lock}); run the command again when it finishes"
+    )]
+    DownloadBusy { asset: String, lock: PathBuf },
+    #[error("CKBUP_KEEP_ARCHIVES must be 1 or 0")]
+    KeepArchivesValue,
+    #[error("{tool} is not installed. Install it with: ckbup install {tool}")]
+    NotInstalledToUpdate { tool: String },
 }
 
 impl StoreError {
@@ -104,6 +112,15 @@ mod tests {
         assert_eq!(
             to_remove.to_string(),
             "fnn v0.9.0 is not installed. Installed: none"
+        );
+    }
+
+    #[test]
+    fn update_of_a_tool_that_is_not_installed_names_the_install_command() {
+        let err = StoreError::NotInstalledToUpdate { tool: "fnn".into() };
+        assert_eq!(
+            err.to_string(),
+            "fnn is not installed. Install it with: ckbup install fnn"
         );
     }
 

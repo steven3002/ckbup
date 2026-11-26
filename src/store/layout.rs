@@ -8,8 +8,9 @@ use super::StoreError;
 /// ```text
 /// <home>/bin/                         copies of the active binaries
 /// <home>/toolchains/<tool>/<version>/ installed release packages
-/// <home>/downloads/                   temporary download and extraction space
-/// <home>/active.toml                  active version per tool
+/// <home>/downloads/                   downloads, and the work folder of each install
+/// <home>/cache/<tool>/<version>/      verified archives kept by the cache switch
+/// <home>/active.toml                  active version per tool, and the held tools
 /// ```
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -54,6 +55,10 @@ impl Layout {
         self.home.join("downloads")
     }
 
+    pub fn cache_dir(&self, tool: &str, version: &str) -> PathBuf {
+        self.home.join("cache").join(tool).join(version)
+    }
+
     pub fn active_file(&self) -> PathBuf {
         self.home.join("active.toml")
     }
@@ -72,6 +77,10 @@ mod tests {
         assert_eq!(
             layout.toolchain_dir("ckb-cli", "v2.0.0"),
             Path::new("/opt/ckbup/toolchains/ckb-cli/v2.0.0")
+        );
+        assert_eq!(
+            layout.cache_dir("ckb-debugger", "v1.1.2"),
+            Path::new("/opt/ckbup/cache/ckb-debugger/v1.1.2")
         );
     }
 
