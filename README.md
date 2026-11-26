@@ -2,9 +2,9 @@
 
 Installer for official releases of CKB development tools.
 
-> **Early development.** ckbup installs, lists, switches and removes `ckb`,
-> `ckb-cli`, `ckb-debugger`, `fnn` and `ckb-light-client`. `moleculec` and the
-> `update` command are planned.
+> **Early development.** ckbup installs, lists, switches, updates and removes
+> `ckb`, `ckb-cli`, `ckb-debugger`, `fnn` and `ckb-light-client`. `moleculec` is
+> planned.
 
 ckbup downloads prebuilt binaries from each project's GitHub Releases, checks
 them against the published SHA-256 checksums, and keeps every installed version
@@ -12,7 +12,7 @@ under one directory.
 
 ## Build
 
-Requires Rust 1.88 or newer.
+Requires Rust 1.89 or newer.
 
 ```sh
 cargo build --release
@@ -26,23 +26,36 @@ The binary is written to `target/release/ckbup` (`ckbup.exe` on Windows).
 ckbup install ckb                          # latest stable release
 ckbup install fnn@v0.9.1                   # a specific release tag (the leading "v" is optional)
 ckbup install ckb-light-client --portable  # prefer the portable build
+ckbup install ckb --keep-archives          # also keep the verified archive in the cache
 ckbup list                                 # installed versions of every tool
 ckbup list fnn                             # installed versions of one tool, with their folders
 ckbup list --available                     # newest stable releases on GitHub
 ckbup use fnn@v0.9.1                       # make an installed version active
+ckbup update                               # move every tool that isn't held to its latest stable release
+ckbup update fnn                           # move one tool, even a held one
 ckbup remove fnn@v0.10.1                   # delete an installed version
 ```
 
 Each install:
 
-1. resolves the release with a single GitHub API request;
+1. resolves the release with a single GitHub API request. Without a version,
+   that is the newest stable release by version number: not a draft, not
+   marked as a prerelease, and no `-` suffix (such as `-rc1`) in the tag.
+   GitHub's own "latest release" follows the order of publication, so a fix
+   for an older line or an unmarked release candidate could take its place;
+   ckbup does not use it;
 2. picks the archive for your OS and CPU from that release's asset list;
-3. downloads it and verifies its SHA-256 against the asset digest reported by
-   GitHub and, for ckb-debugger, against the project's own `-sha256.txt` file;
+3. takes a cached copy of the archive when one matches the published checksums,
+   otherwise downloads it, resuming a download that stopped part-way, and
+   verifies its SHA-256 against the asset digest reported by GitHub and, for
+   ckb-debugger, against the project's own `-sha256.txt` file;
 4. extracts it and keeps the whole release package (binaries, config templates
-   and docs) in `~/.ckbup/toolchains/<tool>/<version>/`;
+   and docs) in `~/.ckbup/toolchains/<tool>/<version>/`. On Linux and macOS, a
+   file the archive marks executable gets mode `0755` and every other file
+   `0644`, so the copy of `ckb-cli` inside the ckb package stays executable;
 5. on the first install of a tool, copies its binaries into `~/.ckbup/bin/` and
-   records it as the active version.
+   records it as the active version. When you named the version, the tool is
+   also held there (see [Update](#update)).
 
 Installing another version of a tool later keeps the active one and prints the
 `ckbup use` command that switches to the new one.
@@ -100,8 +113,9 @@ A release that has no archive for your platform shows
 
 `ckbup use <tool>@<version>` makes an installed version active: it puts that
 version's binaries in `~/.ckbup/bin/` in place of the previous ones and records
-it in `active.toml`. It works offline. A version that is not installed is an
-error, and nothing changes:
+it in `active.toml`. It also holds the tool at that version, so that
+`ckbup update` leaves it alone (see [Update](#update)). It works offline. A
+version that is not installed is an error, and nothing changes:
 
 ```text
 $ ckbup use fnn@v0.9.0
@@ -119,7 +133,61 @@ error: fnn v0.9.1 is the active version. Switch first, for example: ckbup use fn
 ```
 
 Removing the only installed version of a tool also takes its binaries out of
-`~/.ckbup/bin/` and clears its active version.
+`~/.ckbup/bin/` and clears its active version and its hold.
+
+`remove` never deletes an archive kept in the cache; it says where it is (see
+[Cache](#cache)).
+
+### Update
+
+`ckbup update` moves every installed tool to its latest stable release and
+makes that release active. It downloads only when that release is not
+installed yet. It costs one GitHub API request per tool it checks, five at most.
+
+```text
+$ ckbup update
+ckb v0.210.0 is up to date (latest stable)
+fnn v0.10.0 is held; move it to the latest stable release with: ckbup update fnn
+```
+
+A tool is **held** when you chose its version by name: with
+`ckbup use fnn@v0.10.0`, or with `ckbup install fnn@v0.10.0` when that install
+made the version active. `ckbup update` skips a held tool without any request,
+because moving to a new version can need care: the ckb v0.106.0 and v0.108.0
+release notes say that version "requires database migration", and fnn v0.8.0's
+notes ask you to run `fnn-migrate` for its data format changes. `ckbup list`
+shows a held version as `(active, held)`.
+
+`ckbup update <tool>` moves that tool even when it is held, and releases the
+hold, so later runs of `ckbup update` move it too. `ckbup install <tool>`
+without a version releases a hold the same way.
+
+The version that was active before stays installed:
+
+```text
+$ ckbup update fnn
+Downloading fnn_v0.10.1-x86_64-windows.tar.gz
+Verified SHA-256 against GitHub asset digest
+Installed fnn v0.10.1 to C:\Users\me\.ckbup\toolchains\fnn\v0.10.1
+Config templates: C:\Users\me\.ckbup\toolchains\fnn\v0.10.1\config
+fnn v0.10.1 is active: C:\Users\me\.ckbup\bin\fnn.exe, C:\Users\me\.ckbup\bin\fnn-cli.exe
+fnn now follows the latest stable release
+fnn v0.10.0 stays installed. Switch back with: ckbup use fnn@v0.10.0. Remove it with: ckbup remove fnn@v0.10.0
+```
+
+`--remove-old` removes that version instead, as `ckbup remove` would.
+`--portable`, `--allow-unverified` and `--keep-archives` work as they do for
+`install`. When the active version was installed from a portable build, the
+update installs the portable build too, if the new release has one.
+
+`update` never moves a tool to an older release: an active version that is
+newer than the latest stable release, such as a release candidate, is left as
+it is. Naming a tool that is not installed is an error; install it with
+`ckbup install <tool>`.
+
+A failure for one tool is reported as `error: <tool>: ...`, and the other
+tools are still updated; the exit code is then 1. Reaching the GitHub API rate
+limit stops the whole run.
 
 ### On Windows
 
@@ -136,6 +204,68 @@ runs, but it can rename it. So:
 - a version folder that a terminal or another program uses as its working
   directory cannot be removed until it is closed. `remove` says so and changes
   nothing.
+
+## Downloads and the cache
+
+### Interrupted downloads
+
+A download that stops part-way, because the connection dropped or ckbup was
+stopped, stays in `~/.ckbup/downloads/`, and the next install or update of
+the same archive asks GitHub only for the rest:
+
+```text
+$ ckbup install ckb@v0.210.0
+Resuming ckb_v0.210.0_x86_64-pc-windows-msvc.zip at 6843056 of 27414343 bytes
+Verified SHA-256 against GitHub asset digest
+```
+
+ckbup first checks that the bytes it has belong to the same file on GitHub.
+If the file changed, it downloads it again from the start. The SHA-256 is
+always checked on the complete file.
+
+Two ckbup runs never write the same download. The second one stops at once:
+
+```text
+error: another ckbup is downloading ckb_v0.210.0_x86_64-pc-windows-msvc.zip (C:\Users\me\.ckbup\downloads\ckb_v0.210.0_x86_64-pc-windows-msvc.zip.lock); run the command again when it finishes
+```
+
+Right after a ckbup run was killed, the next one may report this once more,
+until the system releases the lock of the killed process.
+
+`install` and `update` delete download leftovers that are more than 7 days
+old.
+
+### Cache
+
+`--keep-archives` on `install` and `update`, or `CKBUP_KEEP_ARCHIVES=1`, keeps
+each verified archive in `~/.ckbup/cache/<tool>/<version>/`, so installing that
+version again needs no download. Whatever the switch says, ckbup uses a cached
+archive only after it matches the checksums published for the release, and
+downloads it again if it does not. An archive without a published checksum is
+never kept.
+
+```text
+$ ckbup install ckb-debugger@v1.1.2
+Using cached C:\Users\me\.ckbup\cache\ckb-debugger\v1.1.2\ckb-debugger_v1.1.2_x86_64-pc-windows-msvc.tar.gz
+Verified SHA-256 against GitHub asset digest
+Verified SHA-256 against ckb-debugger_v1.1.2_x86_64-pc-windows-msvc-sha256.txt
+```
+
+`ckbup remove` never deletes cached archives. It says where they are:
+
+```text
+The archive stays in the cache: C:\Users\me\.ckbup\cache\ckb-debugger\v1.1.2 (3.0 MB). Delete it by hand to free the space.
+```
+
+To clear the whole cache, delete its folder:
+
+```sh
+Remove-Item -Recurse -Force $HOME\.ckbup\cache   # PowerShell
+rm -rf ~/.ckbup/cache                            # Linux and macOS
+```
+
+With `CKBUP_HOME` set, the cache is `$CKBUP_HOME/cache` (`$env:CKBUP_HOME\cache`
+in PowerShell).
 
 ## Supported tools
 
@@ -244,16 +374,23 @@ ckbup.
 | Variable | Effect |
 |---|---|
 | `CKBUP_HOME` | Directory for installed tools. Default: `~/.ckbup`. |
-| `GITHUB_TOKEN` | Optional. Sent to the GitHub API to raise the unauthenticated limit of 60 requests per hour. |
+| `CKBUP_KEEP_ARCHIVES` | `1` keeps verified archives in the cache, as `--keep-archives` does. Unset, empty or `0`: off. Any other value is an error. |
+| `GITHUB_TOKEN` | Optional. Sent to the GitHub API to raise the unauthenticated limit of 60 requests per hour. Release downloads do not count against that limit. |
 
 ## Layout
 
 ```text
 ~/.ckbup/
-├── active.toml                         active version per tool
+├── active.toml                         active version per tool, and the held tools
 ├── bin/                                copies of the active binaries
+├── cache/<tool>/<version>/             archives kept with --keep-archives
+├── downloads/                          downloads in progress, or interrupted
 └── toolchains/<tool>/<version>/        every installed release package
 ```
+
+Each version folder that ckbup installs also holds `.ckbup.toml`, which
+records the archive it came from and whether that was a portable build. ckbup
+never copies it to `bin/`.
 
 ckbup also leaves short-lived entries there:
 
@@ -261,11 +398,17 @@ ckbup also leaves short-lived entries there:
 - `toolchains/<tool>/.<version>.removing` (or `.removing.1` and so on) for a
   removed version whose folder could not be deleted yet;
 - `bin/<name>.old` (or `<name>.old.1` and so on) for a replaced binary that
-  was still running.
+  was still running;
+- `downloads/<archive>.part`, `.part.toml` and `.lock` while a download runs.
+  After it stopped part-way, the `.part` and `.part.toml` stay for the next
+  run, and so does the `.lock` when ckbup was killed;
+- `downloads/.tmp*`, the work folder of an install, which stays behind only
+  when ckbup was killed.
 
-`list` ignores them. ckbup deletes the last two the next time it installs,
-switches or removes that tool, and the next install of that version replaces a
-`.partial` folder.
+`list` ignores them. ckbup deletes the `.removing` folders and `.old` copies
+the next time it installs, switches, updates or removes that tool, and the
+next install of that version replaces a `.partial` folder. `install` and
+`update` delete download leftovers that are more than 7 days old.
 
 ## Development
 
