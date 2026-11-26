@@ -2,6 +2,7 @@ mod entry_path;
 mod error;
 mod format;
 mod locate;
+mod mode;
 mod tar_gz;
 mod zip;
 

@@ -6,8 +6,11 @@ use zip::ZipArchive;
 
 use super::ArchiveError;
 use super::entry_path::safe_relative_path;
+use super::mode;
 
-/// Extracts regular files and directories; symlink entries are skipped.
+/// Extracts regular files and directories; symlink entries are skipped. On
+/// Unix, a file the archive marks executable gets `0o755` and every other file
+/// `0o644`.
 pub fn extract(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
     let zip_err = |source| ArchiveError::Zip {
         path: archive.to_path_buf(),
@@ -39,6 +42,7 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
             }
             let mut out = File::create(&target).map_err(write_err)?;
             io::copy(&mut entry, &mut out).map_err(write_err)?;
+            mode::apply(&target, entry.unix_mode()).map_err(write_err)?;
         }
     }
     Ok(())
@@ -51,11 +55,17 @@ mod tests {
     use zip::write::{SimpleFileOptions, ZipWriter};
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let with_options: Vec<(&str, &[u8], SimpleFileOptions)> = entries
+            .iter()
+            .map(|(name, data)| (*name, *data, SimpleFileOptions::default()))
+            .collect();
+        write_zip_with_options(path, &with_options);
+    }
+
+    fn write_zip_with_options(path: &Path, entries: &[(&str, &[u8], SimpleFileOptions)]) {
         let mut writer = ZipWriter::new(File::create(path).unwrap());
-        for (name, data) in entries {
-            writer
-                .start_file(*name, SimpleFileOptions::default())
-                .unwrap();
+        for (name, data, options) in entries {
+            writer.start_file(*name, *options).unwrap();
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap();
@@ -82,5 +92,37 @@ mod tests {
         let err = extract(&archive, &dir.path().join("out")).unwrap_err();
         assert!(matches!(err, ArchiveError::UnsafeEntry { .. }));
         assert!(!dir.path().join("evil").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maps_entry_modes_to_0o755_or_0o644() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("modes.zip");
+        let options = SimpleFileOptions::default();
+        let setuid = 0o104755 << 16;
+        write_zip_with_options(
+            &archive,
+            &[
+                ("top/ckb", b"bin", options.unix_permissions(0o755)),
+                ("top/README.md", b"doc", options.unix_permissions(0o644)),
+                ("top/setuid", b"bin", options.external_attributes(setuid)),
+            ],
+        );
+        let dest = dir.path().join("out");
+        extract(&archive, &dest).unwrap();
+
+        let mode = |name: &str| {
+            fs::metadata(dest.join("top").join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        assert_eq!(mode("ckb"), 0o755);
+        assert_eq!(mode("README.md"), 0o644);
+        assert_eq!(mode("setuid"), 0o755);
     }
 }

@@ -7,8 +7,11 @@ use tar::{Archive, EntryType};
 
 use super::ArchiveError;
 use super::entry_path::safe_relative_path;
+use super::mode;
 
-/// Extracts regular files and directories; links and special entries are skipped.
+/// Extracts regular files and directories; links and special entries are
+/// skipped. On Unix, a file the archive marks executable gets `0o755` and every
+/// other file `0o644`.
 pub fn extract(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
     let read_err = |source: io::Error| ArchiveError::Read {
         path: archive.to_path_buf(),
@@ -37,6 +40,7 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<(), ArchiveError> {
                 }
                 let mut out = File::create(&target).map_err(write_err)?;
                 io::copy(&mut entry, &mut out).map_err(write_err)?;
+                mode::apply(&target, entry.header().mode().ok()).map_err(write_err)?;
             }
             _ => {}
         }
@@ -51,12 +55,20 @@ mod tests {
     use flate2::write::GzEncoder;
 
     fn write_tar_gz(path: &Path, entries: &[(&str, &[u8])]) {
+        let with_modes: Vec<(&str, &[u8], u32)> = entries
+            .iter()
+            .map(|(name, data)| (*name, *data, 0o755))
+            .collect();
+        write_tar_gz_with_modes(path, &with_modes);
+    }
+
+    fn write_tar_gz_with_modes(path: &Path, entries: &[(&str, &[u8], u32)]) {
         let encoder = GzEncoder::new(File::create(path).unwrap(), Compression::default());
         let mut builder = tar::Builder::new(encoder);
-        for (name, data) in entries {
+        for (name, data, mode) in entries {
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
-            header.set_mode(0o755);
+            header.set_mode(*mode);
             header.set_cksum();
             builder.append_data(&mut header, name, *data).unwrap();
         }
@@ -91,5 +103,35 @@ mod tests {
         let err = extract(&archive, &dest).unwrap_err();
         assert!(matches!(err, ArchiveError::UnsafeEntry { .. }));
         assert!(!dir.path().join("evil").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maps_entry_modes_to_0o755_or_0o644() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("modes.tar.gz");
+        write_tar_gz_with_modes(
+            &archive,
+            &[
+                ("top/ckb", b"bin", 0o755),
+                ("top/README.md", b"doc", 0o644),
+                ("top/setuid", b"bin", 0o4755),
+            ],
+        );
+        let dest = dir.path().join("out");
+        extract(&archive, &dest).unwrap();
+
+        let mode = |name: &str| {
+            fs::metadata(dest.join("top").join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        assert_eq!(mode("ckb"), 0o755);
+        assert_eq!(mode("README.md"), 0o644);
+        assert_eq!(mode("setuid"), 0o755);
     }
 }
