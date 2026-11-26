@@ -18,9 +18,16 @@ pub struct Release {
     pub assets: Vec<Asset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Asset {
+    /// GitHub's id for the uploaded file; a file replaced under the same name
+    /// gets a new id.
+    #[serde(default)]
+    pub id: u64,
     pub name: String,
+    /// Size in bytes.
+    #[serde(default)]
+    pub size: u64,
     pub browser_download_url: String,
     /// `sha256:<hex>`; absent or null on assets GitHub has not hashed.
     #[serde(default)]
@@ -51,25 +58,22 @@ impl Release {
     }
 }
 
-/// Fetches one release with a single API call: the latest stable release when
-/// `tag` is `None`, otherwise the release with that exact tag.
+/// Fetches the release with the exact tag `tag` with a single API call.
 pub fn fetch_release(
     client: &GithubClient,
     owner: &str,
     repo: &str,
-    tag: Option<&str>,
+    tag: &str,
 ) -> Result<Release, GithubError> {
-    let path = match tag {
-        Some(tag) => format!("/repos/{owner}/{repo}/releases/tags/{tag}"),
-        None => format!("/repos/{owner}/{repo}/releases/latest"),
-    };
-    client.get_json(&path).map_err(|err| match (err, tag) {
-        (GithubError::NotFound { .. }, Some(tag)) => GithubError::ReleaseNotFound {
-            repo: format!("{owner}/{repo}"),
-            tag: tag.to_string(),
-        },
-        (err, _) => err,
-    })
+    client
+        .get_json(&format!("/repos/{owner}/{repo}/releases/tags/{tag}"))
+        .map_err(|err| match err {
+            GithubError::NotFound { .. } => GithubError::ReleaseNotFound {
+                repo: format!("{owner}/{repo}"),
+                tag: tag.to_string(),
+            },
+            err => err,
+        })
 }
 
 /// Fetches the first page of a repository's releases, up to 100, with a
@@ -117,5 +121,20 @@ mod tests {
             serde_json::from_str(r#"{"tag_name": "v2.0.0", "assets": []}"#).unwrap();
         assert!(release.is_stable());
         assert_eq!(release.published_date(), None);
+    }
+
+    #[test]
+    fn reads_the_asset_id_and_size() {
+        let release: Release = serde_json::from_str(
+            r#"{"tag_name": "v1.1.2", "assets": [
+                {"id": 753671710, "name": "ckb-debugger_v1.1.2_x86_64-pc-windows-msvc.tar.gz",
+                 "size": 3013794, "browser_download_url": "u",
+                 "digest": "sha256:1b03e2b6b83be85c1fa2410140eb75aa699a08ab430ecfc6d4fad99443b5b690"},
+                {"name": "listed-without-them.txt", "browser_download_url": "u"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(release.assets[0].id, 753671710);
+        assert_eq!(release.assets[0].size, 3013794);
+        assert_eq!((release.assets[1].id, release.assets[1].size), (0, 0));
     }
 }

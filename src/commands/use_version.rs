@@ -1,13 +1,13 @@
 use crate::cli::UseArgs;
 use crate::error::Error;
-use crate::output::{activation_report, path_hint};
+use crate::output::{activation_report, hold_report, path_hint};
 use crate::platform::Host;
-use crate::store::{self, Activation, Layout, StoreError};
+use crate::store::{self, Activation, Hold, Layout, StoreError};
 use crate::tools::{self, ToolSpec};
 
 #[derive(Debug)]
 enum Outcome {
-    AlreadyActive,
+    AlreadyActive { was_held: bool },
     Activated(Activation),
 }
 
@@ -18,11 +18,18 @@ pub fn run(args: &UseArgs) -> Result<(), Error> {
     let version = args.target.version.as_str();
 
     match switch(&layout, tool, version, host)? {
-        Outcome::AlreadyActive => println!("{} {version} is already active", tool.name),
+        Outcome::AlreadyActive { was_held } => {
+            println!("{} {version} is already active", tool.name);
+            print!("{}", hold_report(tool.name, version, Hold::Set, was_held));
+        }
         Outcome::Activated(activation) => {
             print!(
                 "{}",
                 activation_report(tool.name, version, &activation.on_path, &activation.removed)
+            );
+            print!(
+                "{}",
+                hold_report(tool.name, version, Hold::Set, activation.was_held)
             );
             if let Some(hint) = path_hint(&layout.bin_dir(), host.os) {
                 println!("\n{hint}");
@@ -32,11 +39,12 @@ pub fn run(args: &UseArgs) -> Result<(), Error> {
     Ok(())
 }
 
-/// Makes the installed `version` of `tool` active.
+/// Makes the installed `version` of `tool` active and holds the tool there, so
+/// that `update` with no tool leaves it alone.
 ///
 /// It works offline: the version must already be installed, and nothing
-/// changes when it is not, or when it is already active with its files in
-/// `bin/`.
+/// changes when it is not. When it is already active with its files in `bin/`,
+/// only the hold is recorded.
 fn switch(layout: &Layout, tool: &ToolSpec, version: &str, host: Host) -> Result<Outcome, Error> {
     let executables = tool.executables(host);
     store::sweep(layout, tool.name, &executables);
@@ -52,9 +60,17 @@ fn switch(layout: &Layout, tool: &ToolSpec, version: &str, host: Host) -> Result
     };
     let active = store::active_version(layout, tool.name)?;
     if active.as_deref() == Some(version) && store::bin_holds(layout, &version_dir, &executables) {
-        return Ok(Outcome::AlreadyActive);
+        let was_held = store::set_hold(layout, tool.name, Hold::Set)?;
+        return Ok(Outcome::AlreadyActive { was_held });
     }
-    let activation = store::activate(layout, tool.name, version, &version_dir, &executables)?;
+    let activation = store::activate(
+        layout,
+        tool.name,
+        version,
+        &version_dir,
+        &executables,
+        Hold::Set,
+    )?;
     Ok(Outcome::Activated(activation))
 }
 
@@ -79,7 +95,15 @@ mod tests {
     fn two_fnn_versions(layout: &Layout) {
         let active = fake_home::install(layout, "fnn", "v0.10.1", &["fnn", "fnn-cli"]);
         fake_home::install(layout, "fnn", "v0.9.1", &["fnn", "fnn-cli"]);
-        store::activate(layout, "fnn", "v0.10.1", &active, &fnn().executables(LINUX)).unwrap();
+        store::activate(
+            layout,
+            "fnn",
+            "v0.10.1",
+            &active,
+            &fnn().executables(LINUX),
+            Hold::Keep,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -95,10 +119,12 @@ mod tests {
             fs::read(layout.bin_dir().join("fnn-cli")).unwrap(),
             contents("fnn", "v0.9.1", "fnn-cli")
         );
+        let state = store::active_state(&layout).unwrap();
         assert_eq!(
-            store::active_version(&layout, "fnn").unwrap().as_deref(),
+            state.versions.get("fnn").map(String::as_str),
             Some("v0.9.1")
         );
+        assert!(state.held.contains("fnn"));
     }
 
     #[test]
@@ -118,16 +144,27 @@ mod tests {
     }
 
     #[test]
-    fn the_active_version_changes_nothing() {
+    fn the_active_version_is_held_and_nothing_else_changes() {
         let dir = tempfile::tempdir().unwrap();
         let layout = fake_home::layout(dir.path());
         two_fnn_versions(&layout);
-        let before = fake_home::snapshot(layout.home());
+        let mut expected = fake_home::snapshot(layout.home());
+        expected.insert(
+            "active.toml".to_string(),
+            Some(b"fnn = \"v0.10.1\"\nheld = [\"fnn\"]\n".to_vec()),
+        );
 
         let outcome = switch(&layout, fnn(), "v0.10.1", LINUX).unwrap();
 
-        assert!(matches!(outcome, Outcome::AlreadyActive));
-        assert_eq!(fake_home::snapshot(layout.home()), before);
+        assert!(matches!(
+            outcome,
+            Outcome::AlreadyActive { was_held: false }
+        ));
+        assert_eq!(fake_home::snapshot(layout.home()), expected);
+
+        let again = switch(&layout, fnn(), "v0.10.1", LINUX).unwrap();
+        assert!(matches!(again, Outcome::AlreadyActive { was_held: true }));
+        assert_eq!(fake_home::snapshot(layout.home()), expected);
     }
 
     #[test]
@@ -176,6 +213,7 @@ mod tests {
             "v2.0.0",
             &first,
             &cli.executables(LINUX),
+            Hold::Keep,
         )
         .unwrap();
 

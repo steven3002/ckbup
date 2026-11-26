@@ -2,7 +2,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use super::{Layout, StoreError, leftover};
+use super::{InstallRecord, Layout, StoreError, leftover};
 
 /// Returns the version folder of `tool` at `version` if its main binary is there.
 ///
@@ -22,13 +22,15 @@ pub fn installed_dir(
 ///
 /// The package is staged under a hidden name in the same parent folder and then
 /// renamed into place, so the version folder never holds a partial install.
-/// `executables` are marked executable on Unix before the final rename.
+/// Before the final rename, `executables` are marked executable on Unix and
+/// `record` is written into the staged folder.
 pub fn place_package(
     layout: &Layout,
     tool: &str,
     version: &str,
     package_root: &Path,
     executables: &[String],
+    record: &InstallRecord,
 ) -> Result<PathBuf, StoreError> {
     let target = layout.toolchain_dir(tool, version);
     if target.exists() {
@@ -49,6 +51,7 @@ pub fn place_package(
     for file in executables {
         make_executable(&staged.join(file))?;
     }
+    record.write_to(&staged)?;
     fs::rename(&staged, &target).map_err(StoreError::io("cannot write", &target))?;
     Ok(target)
 }
@@ -110,9 +113,17 @@ fn make_executable(_path: &Path) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::Variant;
 
     fn layout(dir: &Path) -> Layout {
         Layout::resolve(Some(dir.join("home").into()), None).unwrap()
+    }
+
+    fn record(archive: &str) -> InstallRecord {
+        InstallRecord {
+            archive: archive.to_string(),
+            variant: Variant::Portable,
+        }
     }
 
     #[test]
@@ -149,10 +160,20 @@ mod tests {
         .unwrap();
 
         let executables = ["fnn".to_string(), "fnn-cli".to_string()];
-        let placed = place_package(&layout, "fnn", "v0.9.1", &package, &executables).unwrap();
+        let archive = "fnn_v0.9.1-x86_64-linux-portable.tar.gz";
+        let placed = place_package(
+            &layout,
+            "fnn",
+            "v0.9.1",
+            &package,
+            &executables,
+            &record(archive),
+        )
+        .unwrap();
 
         assert_eq!(placed, layout.toolchain_dir("fnn", "v0.9.1"));
         assert_eq!(fs::read(placed.join("fnn-cli")).unwrap(), b"cli");
+        assert_eq!(InstallRecord::read_from(&placed), Some(record(archive)));
         assert!(
             placed
                 .join("config")
@@ -174,9 +195,18 @@ mod tests {
         let package = dir.path().join("extracted");
         fs::create_dir_all(&package).unwrap();
 
-        let err = place_package(&layout, "ckb", "v0.210.0", &package, &[]).unwrap_err();
+        let err = place_package(
+            &layout,
+            "ckb",
+            "v0.210.0",
+            &package,
+            &[],
+            &record("ckb.tar.gz"),
+        )
+        .unwrap_err();
         assert!(matches!(err, StoreError::Occupied { .. }));
         assert_eq!(fs::read(existing.join("notes.txt")).unwrap(), b"keep");
+        assert_eq!(InstallRecord::read_from(&existing), None);
     }
 
     #[test]

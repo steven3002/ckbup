@@ -54,13 +54,30 @@ impl VariantOrder {
     }
 }
 
+/// Where a tool's official releases are published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseSource {
+    /// The releases of the GitHub repository `<owner>/<repo>`.
+    Github {
+        owner: &'static str,
+        repo: &'static str,
+    },
+}
+
+impl std::fmt::Display for ReleaseSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReleaseSource::Github { owner, repo } => write!(f, "{owner}/{repo}"),
+        }
+    }
+}
+
 /// Static description of an installable tool and its official releases.
 #[derive(Debug)]
 pub struct ToolSpec {
     /// Tool name, also the prefix of its release asset names.
     pub name: &'static str,
-    pub owner: &'static str,
-    pub repo: &'static str,
+    pub source: ReleaseSource,
     pub binary: &'static str,
     /// Further binaries from the package that are put on PATH with `binary`.
     pub companions: &'static [&'static str],
@@ -97,8 +114,10 @@ const ALL_HOSTS: &[(Os, Arch)] = &[
 
 const CKB: ToolSpec = ToolSpec {
     name: "ckb",
-    owner: "nervosnetwork",
-    repo: "ckb",
+    source: ReleaseSource::Github {
+        owner: "nervosnetwork",
+        repo: "ckb",
+    },
     binary: "ckb",
     companions: &[],
     naming: Naming::Triple,
@@ -110,8 +129,10 @@ const CKB: ToolSpec = ToolSpec {
 
 const CKB_CLI: ToolSpec = ToolSpec {
     name: "ckb-cli",
-    owner: "nervosnetwork",
-    repo: "ckb-cli",
+    source: ReleaseSource::Github {
+        owner: "nervosnetwork",
+        repo: "ckb-cli",
+    },
     binary: "ckb-cli",
     companions: &[],
     naming: Naming::Triple,
@@ -123,8 +144,10 @@ const CKB_CLI: ToolSpec = ToolSpec {
 
 const CKB_DEBUGGER: ToolSpec = ToolSpec {
     name: "ckb-debugger",
-    owner: "nervosnetwork",
-    repo: "ckb-standalone-debugger",
+    source: ReleaseSource::Github {
+        owner: "nervosnetwork",
+        repo: "ckb-standalone-debugger",
+    },
     binary: "ckb-debugger",
     companions: &[],
     naming: Naming::Triple,
@@ -141,8 +164,10 @@ const CKB_DEBUGGER: ToolSpec = ToolSpec {
 
 const FNN: ToolSpec = ToolSpec {
     name: "fnn",
-    owner: "nervosnetwork",
-    repo: "fiber",
+    source: ReleaseSource::Github {
+        owner: "nervosnetwork",
+        repo: "fiber",
+    },
     binary: "fnn",
     companions: &["fnn-cli"],
     naming: Naming::ArchOs,
@@ -154,8 +179,10 @@ const FNN: ToolSpec = ToolSpec {
 
 const CKB_LIGHT_CLIENT: ToolSpec = ToolSpec {
     name: "ckb-light-client",
-    owner: "nervosnetwork",
-    repo: "ckb-light-client",
+    source: ReleaseSource::Github {
+        owner: "nervosnetwork",
+        repo: "ckb-light-client",
+    },
     binary: "ckb-light-client",
     companions: &[],
     naming: Naming::ArchOs,
@@ -190,14 +217,21 @@ pub fn find_tool(name: &str) -> Result<&'static ToolSpec, ToolError> {
 mod tests {
     use super::*;
 
+    fn github(repo: &'static str) -> ReleaseSource {
+        ReleaseSource::Github {
+            owner: "nervosnetwork",
+            repo,
+        }
+    }
+
     #[test]
     fn finds_known_tools_and_rejects_others() {
-        assert_eq!(find_tool("ckb-cli").unwrap().repo, "ckb-cli");
+        assert_eq!(find_tool("ckb-cli").unwrap().source, github("ckb-cli"));
         assert_eq!(
-            find_tool("ckb-debugger").unwrap().repo,
-            "ckb-standalone-debugger"
+            find_tool("ckb-debugger").unwrap().source,
+            github("ckb-standalone-debugger")
         );
-        assert_eq!(find_tool("fnn").unwrap().repo, "fiber");
+        assert_eq!(find_tool("fnn").unwrap().source, github("fiber"));
         let err = find_tool("ckb-foo").unwrap_err().to_string();
         assert!(err.contains("ckb, ckb-cli, ckb-debugger, fnn, ckb-light-client"));
     }

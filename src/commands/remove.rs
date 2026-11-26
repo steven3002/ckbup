@@ -6,8 +6,9 @@ use crate::platform::Host;
 use crate::store::{self, Layout, StoreError};
 use crate::tools::{self, ToolSpec};
 
+/// What `remove_version` did.
 #[derive(Debug)]
-struct Removed {
+pub struct Removed {
     version_dir: PathBuf,
     /// The files taken out of `bin/` when the last version was the active one.
     deactivated: Option<Vec<PathBuf>>,
@@ -21,10 +22,17 @@ pub fn run(args: &RemoveArgs) -> Result<(), Error> {
     let layout = Layout::from_env()?;
     let version = args.target.version.as_str();
 
-    let removed = remove(&layout, tool, version, host)?;
-    println!(
-        "Removed {} {version} ({})",
-        tool.name,
+    let removed = remove_version(&layout, tool, version, host)?;
+    print!("{}", removal_report(&layout, tool.name, version, &removed));
+    Ok(())
+}
+
+/// The lines that report a removal: the folder, the deactivation of the last
+/// version, a folder left for a later sweep, and the version's archive, which
+/// stays in the cache.
+pub fn removal_report(layout: &Layout, tool: &str, version: &str, removed: &Removed) -> String {
+    let mut report = format!(
+        "Removed {tool} {version} ({})\n",
         removed.version_dir.display()
     );
     if let Some(files) = &removed.deactivated {
@@ -32,32 +40,42 @@ pub fn run(args: &RemoveArgs) -> Result<(), Error> {
             .iter()
             .map(|file| file.display().to_string())
             .collect();
-        match files.as_slice() {
-            [] => println!("{} has no active version now", tool.name),
-            files => println!(
-                "{} has no active version now; removed {}",
-                tool.name,
+        report.push_str(&match files.as_slice() {
+            [] => format!("{tool} has no active version now\n"),
+            files => format!(
+                "{tool} has no active version now; removed {}\n",
                 files.join(", ")
             ),
-        }
+        });
     }
     if let Some(hidden) = &removed.left_behind {
-        println!(
-            "{} is still in use; it will be deleted the next time ckbup installs, switches or removes {}",
-            hidden.display(),
-            tool.name
-        );
+        report.push_str(&format!(
+            "{} is still in use; it will be deleted the next time ckbup installs, switches or removes {tool}\n",
+            hidden.display()
+        ));
     }
-    Ok(())
+    if let Some((folder, bytes)) = store::cached_size(layout, tool, version) {
+        report.push_str(&format!(
+            "The archive stays in the cache: {} ({:.1} MB). Delete it by hand to free the space.\n",
+            folder.display(),
+            bytes as f64 / 1_000_000.0
+        ));
+    }
+    report
 }
 
-/// Deletes the folder of one version of `tool`.
+/// Deletes the folder of one version of `tool`. The cache is never touched.
 ///
 /// The active version is removed only when no other version is installed, and
 /// the tool is then deactivated. The folder is renamed to a hidden name before
 /// anything else changes, so a folder that a program or terminal is using
 /// stops the removal with nothing changed.
-fn remove(layout: &Layout, tool: &ToolSpec, version: &str, host: Host) -> Result<Removed, Error> {
+pub fn remove_version(
+    layout: &Layout,
+    tool: &ToolSpec,
+    version: &str,
+    host: Host,
+) -> Result<Removed, Error> {
     let executables = tool.executables(host);
     store::sweep(layout, tool.name, &executables);
     let binary_file = host.executable_name(tool.binary);
@@ -109,7 +127,7 @@ mod tests {
 
     use super::*;
     use crate::platform::{Arch, Os};
-    use crate::store::fake_home;
+    use crate::store::{Hold, fake_home};
 
     const LINUX: Host = Host {
         os: Os::Linux,
@@ -127,7 +145,24 @@ mod tests {
         }
         let active = layout.toolchain_dir("fnn", versions[0]);
         let executables = tool("fnn").executables(LINUX);
-        store::activate(layout, "fnn", versions[0], &active, &executables).unwrap();
+        store::activate(
+            layout,
+            "fnn",
+            versions[0],
+            &active,
+            &executables,
+            Hold::Keep,
+        )
+        .unwrap();
+    }
+
+    fn remove(
+        layout: &Layout,
+        tool: &ToolSpec,
+        version: &str,
+        host: Host,
+    ) -> Result<Removed, Error> {
+        remove_version(layout, tool, version, host)
     }
 
     #[test]
@@ -174,6 +209,7 @@ mod tests {
             "v0.210.0",
             &ckb,
             &tool("ckb").executables(LINUX),
+            Hold::Keep,
         )
         .unwrap();
 
@@ -188,7 +224,7 @@ mod tests {
         );
         assert!(fake_home::names(&layout.tool_dir("fnn")).is_empty());
         assert_eq!(fake_home::names(&layout.bin_dir()), ["ckb"]);
-        let active = store::active_versions(&layout).unwrap();
+        let active = store::active_state(&layout).unwrap().versions;
         assert_eq!(active.get("fnn"), None);
         assert_eq!(active.get("ckb").map(String::as_str), Some("v0.210.0"));
         assert_eq!(fake_home::names(&ckb), ["ckb", "ckb-cli"]);
@@ -251,6 +287,7 @@ mod tests {
             "v2.0.0",
             &folder,
             &cli.executables(LINUX),
+            Hold::Keep,
         )
         .unwrap();
 
@@ -258,6 +295,48 @@ mod tests {
 
         assert!(fake_home::names(&layout.tool_dir("ckb-cli")).is_empty());
         assert!(fake_home::names(&layout.bin_dir()).is_empty());
-        assert!(store::active_versions(&layout).unwrap().is_empty());
+        assert!(store::active_state(&layout).unwrap().versions.is_empty());
+    }
+
+    #[test]
+    fn removing_the_last_version_drops_its_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = fake_home::layout(dir.path());
+        fnn_home(&layout, &["v0.10.1"]);
+        store::set_hold(&layout, "fnn", Hold::Set).unwrap();
+
+        remove(&layout, tool("fnn"), "v0.10.1", LINUX).unwrap();
+
+        assert_eq!(store::active_state(&layout).unwrap(), Default::default());
+    }
+
+    #[test]
+    fn the_cached_archive_stays_and_its_size_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = fake_home::layout(dir.path());
+        fnn_home(&layout, &["v0.10.1", "v0.9.1"]);
+        let cache = layout.cache_dir("fnn", "v0.9.1");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(
+            cache.join("fnn_v0.9.1-x86_64-linux-portable.tar.gz"),
+            vec![0u8; 2_345_678],
+        )
+        .unwrap();
+
+        let removed = remove(&layout, tool("fnn"), "v0.9.1", LINUX).unwrap();
+        let report = removal_report(&layout, "fnn", "v0.9.1", &removed);
+
+        assert_eq!(
+            report,
+            format!(
+                "Removed fnn v0.9.1 ({})\nThe archive stays in the cache: {} (2.3 MB). Delete it by hand to free the space.\n",
+                layout.toolchain_dir("fnn", "v0.9.1").display(),
+                cache.display()
+            )
+        );
+        assert_eq!(
+            fake_home::names(&cache),
+            ["fnn_v0.9.1-x86_64-linux-portable.tar.gz"]
+        );
     }
 }

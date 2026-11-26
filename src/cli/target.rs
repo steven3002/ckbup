@@ -27,6 +27,17 @@ pub fn remove_target(target: &str) -> Result<VersionedTarget, String> {
     versioned(target, "ckbup remove fnn@v0.9.1")
 }
 
+/// Parses the tool of `ckbup update`, which always moves to the latest
+/// stable release and so takes no version.
+pub fn update_tool(target: &str) -> Result<String, String> {
+    if target.contains('@') {
+        return Err(format!(
+            "expected a tool without a version, for example: ckbup update fnn. To install a specific version, run: ckbup install {target}"
+        ));
+    }
+    Ok(target.to_string())
+}
+
 fn versioned(target: &str, example: &str) -> Result<VersionedTarget, String> {
     match parse_target(target) {
         (tool, Some(version)) if !tool.is_empty() && !version.is_empty() => Ok(VersionedTarget {
@@ -64,6 +75,15 @@ mod tests {
         assert_eq!(use_target("fnn@v0.9.1").unwrap(), expected);
         assert_eq!(remove_target("fnn@0.9.1").unwrap(), expected);
         assert_eq!(remove_target("fnn@v0.9.1").unwrap(), expected);
+    }
+
+    #[test]
+    fn update_takes_a_tool_without_a_version() {
+        assert_eq!(update_tool("fnn").unwrap(), "fnn");
+        assert_eq!(
+            update_tool("fnn@v0.10.1").unwrap_err(),
+            "expected a tool without a version, for example: ckbup update fnn. To install a specific version, run: ckbup install fnn@v0.10.1"
+        );
     }
 
     #[test]

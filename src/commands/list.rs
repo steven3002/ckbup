@@ -1,9 +1,10 @@
 use crate::cli::ListArgs;
 use crate::error::Error;
-use crate::github::{self, GithubClient, Release};
-use crate::output::version_list::{self, ReleaseRow, ReleaseSource, State, ToolRow, VersionRow};
+use crate::github::{GithubClient, Release};
+use crate::output::version_list::{self, AvailableHeader, ReleaseRow, State, ToolRow, VersionRow};
 use crate::platform::Host;
-use crate::store::{self, Layout};
+use crate::releases;
+use crate::store::{self, ActiveState, Layout};
 use crate::tools::{self, ToolSpec, newest_first};
 
 /// How many stable releases `list --available` shows per tool.
@@ -19,16 +20,16 @@ pub fn run(args: &ListArgs) -> Result<(), Error> {
         Some(tool) => vec![tool],
         None => tools::all_tools().iter().collect(),
     };
-    let active = store::active_versions(&layout)?;
+    let active = store::active_state(&layout)?;
 
     if args.available {
         let client = GithubClient::from_env();
         for (index, tool) in selected.iter().enumerate() {
-            let releases = github::list_releases(&client, tool.owner, tool.repo)?;
-            let versions = version_rows(&layout, tool, host, active.get(tool.name))?;
-            let source = ReleaseSource {
+            let stable = releases::stable_releases(&client, tool)?;
+            let versions = version_rows(&layout, tool, host, &active)?;
+            let header = AvailableHeader {
                 tool: tool.name.to_string(),
-                repo: format!("{}/{}", tool.owner, tool.repo),
+                repo: tool.source.to_string(),
                 host: format!("{}/{}", host.os.as_str(), host.arch.as_str()),
             };
             if index > 0 {
@@ -37,8 +38,8 @@ pub fn run(args: &ListArgs) -> Result<(), Error> {
             print!(
                 "{}",
                 version_list::available_view(
-                    &source,
-                    &release_rows(tool, host, &releases, &versions)
+                    &header,
+                    &release_rows(tool, host, &stable, &versions)
                 )
             );
         }
@@ -46,7 +47,7 @@ pub fn run(args: &ListArgs) -> Result<(), Error> {
     }
 
     if let Some(tool) = only {
-        let versions = version_rows(&layout, tool, host, active.get(tool.name))?;
+        let versions = version_rows(&layout, tool, host, &active)?;
         print!("{}", version_list::tool_view(tool.name, &versions));
         return Ok(());
     }
@@ -55,7 +56,7 @@ pub fn run(args: &ListArgs) -> Result<(), Error> {
         .map(|tool| {
             Ok(ToolRow {
                 tool: tool.name.to_string(),
-                versions: version_rows(&layout, tool, host, active.get(tool.name))?,
+                versions: version_rows(&layout, tool, host, &active)?,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -63,20 +64,27 @@ pub fn run(args: &ListArgs) -> Result<(), Error> {
     Ok(())
 }
 
-/// The installed versions of `tool`, newest first, with the active one marked.
-/// An active version that is no longer installed is listed in its place.
+/// The installed versions of `tool`, newest first, with the active one marked
+/// and, when the tool is held, marked held. An active version that is no
+/// longer installed is listed in its place.
 fn version_rows(
     layout: &Layout,
     tool: &ToolSpec,
     host: Host,
-    active: Option<&String>,
+    recorded: &ActiveState,
 ) -> Result<Vec<VersionRow>, Error> {
+    let active = recorded.versions.get(tool.name);
+    let active_state = if recorded.held.contains(tool.name) {
+        State::ActiveHeld
+    } else {
+        State::Active
+    };
     let binary_file = host.executable_name(tool.binary);
     let mut rows: Vec<VersionRow> = store::installed_versions(layout, tool.name, &binary_file)?
         .into_iter()
         .map(|version| VersionRow {
             state: if active == Some(&version) {
-                State::Active
+                active_state
             } else {
                 State::Installed
             },
@@ -96,21 +104,16 @@ fn version_rows(
     Ok(rows)
 }
 
-/// The newest stable releases, at most `AVAILABLE_LIMIT` of them, with their
-/// state here and what `host` lacks for each.
+/// The first `AVAILABLE_LIMIT` of the stable releases, which come newest
+/// first, with their state here and what `host` lacks for each.
 fn release_rows(
     tool: &ToolSpec,
     host: Host,
-    releases: &[Release],
+    stable: &[Release],
     versions: &[VersionRow],
 ) -> Vec<ReleaseRow> {
-    let mut stable: Vec<&Release> = releases
-        .iter()
-        .filter(|release| release.is_stable())
-        .collect();
-    stable.sort_by(|a, b| newest_first(&a.tag_name, &b.tag_name));
     stable
-        .into_iter()
+        .iter()
         .take(AVAILABLE_LIMIT)
         .map(|release| ReleaseRow {
             tag: release.tag_name.clone(),
@@ -189,8 +192,9 @@ mod tests {
              "digest": null}]}
     ]"#;
 
+    /// The stable releases of a page as `list --available` receives them.
     fn releases(json: &str) -> Vec<Release> {
-        serde_json::from_str(json).unwrap()
+        releases::newest_stable(serde_json::from_str(json).unwrap())
     }
 
     fn row(tag: &str, date: &str, state: Option<State>, note: Option<&str>) -> ReleaseRow {
@@ -281,6 +285,18 @@ mod tests {
         );
     }
 
+    /// `active.toml` with fnn at `version`, held when `held` is true.
+    fn fnn_active(version: &str, held: bool) -> ActiveState {
+        let mut state = ActiveState::default();
+        state
+            .versions
+            .insert("fnn".to_string(), version.to_string());
+        if held {
+            state.held.insert("fnn".to_string());
+        }
+        state
+    }
+
     #[test]
     fn version_rows_mark_the_active_version_and_one_that_is_gone() {
         let dir = tempfile::tempdir().unwrap();
@@ -293,7 +309,7 @@ mod tests {
         fake_home::install(&layout, "fnn", "v0.9.1", &["fnn", "fnn-cli"]);
         fake_home::install(&layout, "fnn", "v0.10.1", &["fnn", "fnn-cli"]);
 
-        let rows = version_rows(&layout, fnn, linux, Some(&"v0.9.1".to_string())).unwrap();
+        let rows = version_rows(&layout, fnn, linux, &fnn_active("v0.9.1", false)).unwrap();
         assert_eq!(
             rows,
             [
@@ -310,7 +326,7 @@ mod tests {
             ]
         );
 
-        let rows = version_rows(&layout, fnn, linux, Some(&"v0.9.5".to_string())).unwrap();
+        let rows = version_rows(&layout, fnn, linux, &fnn_active("v0.9.5", false)).unwrap();
         let states: Vec<(&str, State)> = rows
             .iter()
             .map(|row| (row.version.as_str(), row.state))
@@ -323,5 +339,9 @@ mod tests {
                 ("v0.9.1", State::Installed),
             ]
         );
+
+        let rows = version_rows(&layout, fnn, linux, &fnn_active("v0.9.1", true)).unwrap();
+        let states: Vec<State> = rows.iter().map(|row| row.state).collect();
+        assert_eq!(states, [State::Installed, State::ActiveHeld]);
     }
 }

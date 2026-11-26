@@ -204,14 +204,21 @@ fn use_of_a_version_that_is_not_installed_changes_nothing() {
 }
 
 #[test]
-fn use_of_the_active_version_changes_nothing() {
+fn use_of_the_active_version_only_holds_it() {
     let home = fake_home();
-    let before = snapshot(home.path());
+    let mut expected = snapshot(home.path());
+    expected.insert(
+        PathBuf::from("active.toml"),
+        Some(b"ckb-cli = \"v2.0.0\"\nfnn = \"v0.10.1\"\nheld = [\"ckb-cli\"]\n".to_vec()),
+    );
 
     let out = ckbup(home.path(), &["use", "ckb-cli@v2.0.0"]);
 
-    assert_eq!(out, "ckb-cli v2.0.0 is already active\n");
-    assert_eq!(snapshot(home.path()), before);
+    assert_eq!(
+        out,
+        "ckb-cli v2.0.0 is already active\nckb-cli is held at v2.0.0; ckbup update skips it until you run: ckbup update ckb-cli\n"
+    );
+    assert_eq!(snapshot(home.path()), expected);
 }
 
 #[test]

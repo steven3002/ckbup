@@ -16,6 +16,14 @@ pub enum GithubError {
     RateLimited { reset: String },
     #[error("release {tag} not found in {repo}")]
     ReleaseNotFound { repo: String, tag: String },
+    #[error(
+        "{source_name} has no stable release on its first page; name a version, for example ckbup install {tool}@{example}"
+    )]
+    NoStableRelease {
+        source_name: String,
+        tool: String,
+        example: String,
+    },
     #[error("not found: {url}")]
     NotFound { url: String },
     #[error("{url} returned HTTP {status}")]
@@ -34,17 +42,39 @@ pub enum GithubError {
     },
     #[error("release {tag} has no asset named {name}")]
     AssetMissing { tag: String, name: String },
-    #[error("cannot save the download to {path}: {source}")]
-    Save {
+    #[error("{action} {path}: {source}")]
+    File {
+        action: &'static str,
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "download of {name} stopped at {received} of {size} bytes ({cause}); run the same command again to resume"
+    )]
+    DownloadStopped {
+        name: String,
+        received: u64,
+        size: u64,
+        cause: String,
+    },
+    #[error(
+        "download of {name} is longer than its listed size of {size} bytes, so it was deleted; run the same command again"
+    )]
+    DownloadTooLong { name: String, size: u64 },
+    #[error(
+        "download of {name} does not match the release asset GitHub lists ({reason}), so it was deleted; run the same command again"
+    )]
+    AssetChanged { name: String, reason: String },
 }
 
 impl GithubError {
-    pub fn save(path: &Path) -> impl FnOnce(std::io::Error) -> Self {
+    pub fn file(action: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> Self {
         let path = path.to_path_buf();
-        move |source| GithubError::Save { path, source }
+        move |source| GithubError::File {
+            action,
+            path,
+            source,
+        }
     }
 }

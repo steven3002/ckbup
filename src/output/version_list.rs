@@ -8,6 +8,8 @@ use std::path::PathBuf;
 pub enum State {
     Installed,
     Active,
+    /// Active, with the tool held there so that `update` leaves it alone.
+    ActiveHeld,
     /// Recorded as active, but no longer installed.
     ActiveMissing,
 }
@@ -17,6 +19,7 @@ impl State {
         match self {
             State::Installed => "installed",
             State::Active => "active",
+            State::ActiveHeld => "active, held",
             State::ActiveMissing => "active, not installed",
         }
     }
@@ -53,7 +56,7 @@ pub struct ReleaseRow {
 /// The tool, repository (`<owner>/<repo>`) and host (`<os>/<arch>`) of an
 /// available-releases view.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReleaseSource {
+pub struct AvailableHeader {
     pub tool: String,
     pub repo: String,
     pub host: String,
@@ -125,10 +128,10 @@ pub fn tool_view(tool: &str, versions: &[VersionRow]) -> String {
 
 /// `ckbup list --available`: the newest stable releases of one tool, with
 /// their state and what this host lacks for them.
-pub fn available_view(source: &ReleaseSource, releases: &[ReleaseRow]) -> String {
+pub fn available_view(header: &AvailableHeader, releases: &[ReleaseRow]) -> String {
     let mut text = format!(
         "{} ({}), newest stable releases for {}:\n",
-        source.tool, source.repo, source.host
+        header.tool, header.repo, header.host
     );
     if releases.is_empty() {
         text.push_str("  none found\n");
@@ -152,7 +155,7 @@ pub fn available_view(source: &ReleaseSource, releases: &[ReleaseRow]) -> String
     }
     text.push_str(&format!(
         "Older releases: https://github.com/{}/releases\n",
-        source.repo
+        header.repo
     ));
     text
 }
@@ -250,6 +253,36 @@ ckb-light-client  not installed
     }
 
     #[test]
+    fn every_view_marks_a_held_version() {
+        let fnn = vec![
+            row("v0.10.1", State::Installed, Some("/f/v0.10.1")),
+            row("v0.9.1", State::ActiveHeld, Some("/f/v0.9.1")),
+        ];
+        assert_eq!(
+            tools_view(&[tool("fnn", fnn.clone())]),
+            "fnn  v0.10.1, v0.9.1 (active, held)\n"
+        );
+        assert_eq!(
+            tool_view("fnn", &fnn),
+            "v0.10.1                /f/v0.10.1\nv0.9.1   active, held  /f/v0.9.1\n"
+        );
+        let header = AvailableHeader {
+            tool: "fnn".to_string(),
+            repo: "nervosnetwork/fiber".to_string(),
+            host: "linux/x86_64".to_string(),
+        };
+        let releases = [release(
+            "v0.9.1",
+            "2026-09-11",
+            Some(State::ActiveHeld),
+            None,
+        )];
+        assert!(
+            available_view(&header, &releases).contains("  v0.9.1  2026-09-11  active, held\n")
+        );
+    }
+
+    #[test]
     fn tools_view_flags_an_active_version_that_is_gone() {
         let tools = [
             tool(
@@ -334,7 +367,7 @@ fnn v0.9.1 is recorded as active but is not installed. Install it again with: ck
 
     #[test]
     fn available_view_shows_state_notes_and_the_releases_page() {
-        let source = ReleaseSource {
+        let header = AvailableHeader {
             tool: "ckb-light-client".to_string(),
             repo: "nervosnetwork/ckb-light-client".to_string(),
             host: "windows/x86_64".to_string(),
@@ -350,7 +383,7 @@ fnn v0.9.1 is recorded as active but is not installed. Install it again with: ck
             ),
         ];
         assert_eq!(
-            available_view(&source, &releases),
+            available_view(&header, &releases),
             "\
 ckb-light-client (nervosnetwork/ckb-light-client), newest stable releases for windows/x86_64:
   v0.5.4  2026-01-02  active
@@ -363,13 +396,13 @@ Older releases: https://github.com/nervosnetwork/ckb-light-client/releases
 
     #[test]
     fn available_view_without_stable_releases() {
-        let source = ReleaseSource {
+        let header = AvailableHeader {
             tool: "fnn".to_string(),
             repo: "nervosnetwork/fiber".to_string(),
             host: "linux/x86_64".to_string(),
         };
         assert_eq!(
-            available_view(&source, &[]),
+            available_view(&header, &[]),
             "\
 fnn (nervosnetwork/fiber), newest stable releases for linux/x86_64:
   none found

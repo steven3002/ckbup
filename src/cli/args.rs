@@ -18,6 +18,8 @@ pub enum Command {
     List(ListArgs),
     /// Make an installed version active (e.g. fnn@v0.9.1)
     Use(UseArgs),
+    /// Move tools to their latest stable release; held tools stay unless named
+    Update(UpdateArgs),
     /// Delete an installed version (e.g. fnn@v0.9.1)
     Remove(RemoveArgs),
 }
@@ -34,6 +36,10 @@ pub struct InstallArgs {
     /// Prefer the portable build; try it if the standard build fails with an illegal-instruction error
     #[arg(long)]
     pub portable: bool,
+
+    /// Keep the verified archive in the ckbup cache (also: CKBUP_KEEP_ARCHIVES=1)
+    #[arg(long)]
+    pub keep_archives: bool,
 }
 
 #[derive(Debug, Args)]
@@ -51,6 +57,29 @@ pub struct UseArgs {
     /// Installed version to activate, as <tool>@<version>
     #[arg(value_name = "TOOL@VERSION", value_parser = target::use_target)]
     pub target: VersionedTarget,
+}
+
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    /// Update only this tool, even when it is held, and release its hold
+    #[arg(value_name = "TOOL", value_parser = target::update_tool)]
+    pub tool: Option<String>,
+
+    /// Prefer the portable build for the new version
+    #[arg(long)]
+    pub portable: bool,
+
+    /// Install a new version even when no published checksum is available
+    #[arg(long)]
+    pub allow_unverified: bool,
+
+    /// Keep verified archives in the ckbup cache (also: CKBUP_KEEP_ARCHIVES=1)
+    #[arg(long)]
+    pub keep_archives: bool,
+
+    /// Remove the version that the update replaced
+    #[arg(long)]
+    pub remove_old: bool,
 }
 
 #[derive(Debug, Args)]
@@ -87,5 +116,56 @@ mod tests {
     fn install_keeps_an_optional_version() {
         let cli = Cli::try_parse_from(["ckbup", "install", "fnn"]).unwrap();
         assert!(matches!(cli.command, Command::Install(args) if args.target == "fnn"));
+    }
+
+    #[test]
+    fn install_takes_keep_archives() {
+        let cli = Cli::try_parse_from(["ckbup", "install", "fnn", "--keep-archives"]).unwrap();
+        assert!(matches!(cli.command, Command::Install(args) if args.keep_archives));
+    }
+
+    #[test]
+    fn update_takes_an_optional_tool_and_its_flags() {
+        let cli = Cli::try_parse_from(["ckbup", "update"]).unwrap();
+        let Command::Update(args) = cli.command else {
+            panic!("not update");
+        };
+        assert_eq!(args.tool, None);
+        assert!(
+            !args.portable && !args.allow_unverified && !args.keep_archives && !args.remove_old
+        );
+
+        let cli = Cli::try_parse_from([
+            "ckbup",
+            "update",
+            "fnn",
+            "--portable",
+            "--allow-unverified",
+            "--keep-archives",
+            "--remove-old",
+        ])
+        .unwrap();
+        let Command::Update(args) = cli.command else {
+            panic!("not update");
+        };
+        assert_eq!(args.tool.as_deref(), Some("fnn"));
+        assert!(args.portable && args.allow_unverified && args.keep_archives && args.remove_old);
+    }
+
+    #[test]
+    fn update_rejects_a_version() {
+        let err = Cli::try_parse_from(["ckbup", "update", "fnn@v0.10.1"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert!(
+            err.to_string().contains("ckbup install fnn@v0.10.1"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn remove_takes_no_cache_flag() {
+        let err =
+            Cli::try_parse_from(["ckbup", "remove", "fnn@v0.9.1", "--keep-archives"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 }
