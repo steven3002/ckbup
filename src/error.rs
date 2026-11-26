@@ -19,4 +19,7 @@ pub enum Error {
     Archive(#[from] ArchiveError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// A command that already printed each of its failures.
+    #[error("one or more steps failed")]
+    Reported,
 }
