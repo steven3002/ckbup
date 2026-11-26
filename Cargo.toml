@@ -2,7 +2,7 @@
 name = "ckbup"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Steven Hert"]
 description = "Installer and version manager for official CKB tool releases"
 readme = "README.md"
